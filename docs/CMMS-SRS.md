@@ -2,9 +2,9 @@
 
 ## Computerized Maintenance Management System (CMMS)
 
-**Document Version:** 1.0.0
+**Document Version:** 1.1.0
 **Status:** Draft
-**Date:** 2026-06-08
+**Date:** 2026-06-09
 **Classification:** Internal — Requirements Phase
 
 ---
@@ -39,6 +39,8 @@
     - [3.7 Calendar and Scheduling](#37-calendar-and-scheduling)
     - [3.8 Notification System](#38-notification-system)
     - [3.9 Reporting and Visibility](#39-reporting-and-visibility)
+    - [3.10 Activity Lifecycle and Status Management](#310-activity-lifecycle-and-status-management)
+    - [3.11 Asset Management](#311-asset-management)
   - [4. Non-Functional Requirements](#4-non-functional-requirements)
     - [4.1 Performance](#41-performance)
     - [4.2 Scalability](#42-scalability)
@@ -144,6 +146,10 @@ The following capabilities are **explicitly outside the scope of v1.0** but are 
 | **NFR** | Non-Functional Requirement |
 | **TR** | Technical Requirement |
 | **UC** | Use Case |
+| **Asset** | A physical item, piece of equipment, or installation for which maintenance activities (Services and Incidents) are tracked within a tenant |
+| **ActivityStatusTransition** | An immutable record of a single operational-status change on a ManagementActivity; an ordered sequence of these records forms the complete lifecycle history of an activity |
+| **ActivityStatus** | The operational state of a ManagementActivity at a given point in time (e.g., SCHEDULED, IN_PROGRESS, AWAITING_PARTS, COMPLETED) |
+| **FileAsset** | A reference to a binary file (image or document) stored externally; may be attached directly to a ManagementActivity, to a Resolution, or to an Invoice |
 
 ### 1.4 Document Conventions
 
@@ -197,12 +203,25 @@ The following summarises the core domain entities of the System and their princi
 Tenant
   ├── Users (Administrator, Technician, Client)
   │
-  ├── Services
+  ├── Assets
+  │     ├── Name
+  │     ├── Description
+  │     ├── Category / Type
+  │     ├── Serial Number / External Reference
+  │     ├── Installation Date
+  │     └── Associated Client
+  │
+  ├── Services  [ManagementActivity]
   │     ├── Title
   │     ├── Description
   │     ├── Service Date (actual)
   │     ├── Next Service Date (scheduled)
   │     ├── Technical Notes
+  │     ├── Asset Reference (optional)
+  │     ├── File Assets (images or documents attached at any lifecycle point, optional)
+  │     ├── Status Transitions  [ActivityStatusTransition history]
+  │     │     └── Status (SCHEDULED | IN_PROGRESS | AWAITING_PARTS | COMPLETED | CANCELLED)
+  │     │           Timestamp, Actor, Notes
   │     └── Resolution
   │           ├── Resolution Date
   │           ├── Technician Reference
@@ -211,15 +230,19 @@ Tenant
   │           ├── Price Charged
   │           └── Discount (optional)
   │
-  ├── Incidents
+  ├── Incidents  [ManagementActivity]
   │     ├── Title
   │     ├── Priority
   │     ├── Report Date
   │     ├── Description
-  │     ├── Images (optional, submitted by Client)
+  │     ├── Asset Reference (optional)
+  │     ├── File Assets (images or documents attached at any lifecycle point, optional)
+  │     ├── Status Transitions  [ActivityStatusTransition history]
+  │     │     └── Status (OPEN | IN_PROGRESS | AWAITING_PARTS | CLOSED)
+  │     │           Timestamp, Actor, Notes
   │     └── Resolution
   │           ├── Resolution Date
-  │           ├── Resolution Status (Resolved / Pending Parts / Unable to Resolve)
+  │           ├── Resolution Outcome (Resolved / Pending Parts / Unable to Resolve)
   │           ├── Technician Reference
   │           ├── Description of work done
   │           ├── Images (optional)
@@ -227,7 +250,7 @@ Tenant
   │           └── Discount (optional)
   │
   └── Invoices
-        ├── Associated Entity (Service or Incident)
+        ├── Associated Resolution (Service or Incident)
         ├── Document (PDF or Image)
         └── Metadata (date, amount, discount)
 ```
@@ -307,6 +330,7 @@ Tenant
 | **FR-034** | Technicians and Administrators shall be able to view all Service records within their tenant. |
 | **FR-035** | Clients shall be able to view Service records associated with their own account. |
 | **FR-036** | The resolution status categories for a Service shall be extensible in future versions to support additional resolution outcomes beyond the initial set. |
+| **FR-073** | Technicians and Administrators shall be able to attach file assets (images or documents) directly to a Service record at any point in its lifecycle, independently of any files attached within a Resolution record. |
 
 ### 3.5 Incident Management
 
@@ -314,17 +338,18 @@ Tenant
 |---|---|
 | **FR-037** | Clients shall be able to create Incident records to report problems or unplanned failures requiring attention. |
 | **FR-038** | Technicians and Administrators shall also be able to create Incident records on behalf of a client. |
-| **FR-039** | An Incident record shall contain the following fields: (a) Title (mandatory); (b) Priority level (mandatory, assigned to the system-defined default priority upon creation in v1.0); (c) Incident report date (mandatory, automatically set to the date and time of submission); (d) Description of the problem (mandatory); (e) Optional images submitted by the reporting party (Client or employee). |
+| **FR-039** | An Incident record shall contain the following fields: (a) Title (mandatory); (b) Priority level (mandatory, assigned to the system-defined default priority upon creation in v1.0); (c) Incident report date (mandatory, automatically set to the date and time of submission); (d) Description of the problem (mandatory); (e) Optional file assets (images) submitted by the reporting party (Client or employee) at the time of initial submission. |
 | **FR-040** | Incident priority shall be a configurable attribute. In v1.0, all newly created incidents shall be assigned a system-defined default priority value. |
 | **FR-041** | Administrators shall be able to manually update the priority of any Incident at any time. |
 | **FR-042** | The System shall be designed to support automated priority escalation based on the time elapsed since incident creation and the initial priority value, as a future capability. *(Future)* |
 | **FR-043** | Upon addressing an Incident, the responsible Technician shall record a Resolution against the Incident record. |
-| **FR-044** | An Incident Resolution shall contain the following fields: (a) Resolution date (mandatory); (b) Resolution status, which shall be one of: *Resolved*, *Pending Parts*, or *Unable to Resolve* (mandatory); (c) Technician reference (mandatory); (d) Brief description of the corrective action taken (mandatory); (e) Optional photographic evidence (one or more images); (f) Price charged for the service (mandatory for "Resolved" status; optional for others); (g) Discount applied, if any (optional). |
+| **FR-044** | An Incident Resolution shall contain the following fields: (a) Resolution date (mandatory); (b) Resolution outcome status, which shall be one of: *Resolved*, *Pending Parts*, or *Unable to Resolve* (mandatory). This status captures the formal closure outcome and is distinct from the operational status transitions tracked via ActivityStatusTransition (see Section 3.10); (c) Technician reference (mandatory); (d) Brief description of the corrective action taken (mandatory); (e) Optional photographic evidence (one or more images); (f) Price charged for the service (mandatory for "Resolved" status; optional for others); (g) Discount applied, if any (optional). |
 | **FR-045** | An Incident record shall record two distinct dates: the date the incident was reported (set automatically at creation) and the date the incident was resolved (set at resolution time). |
 | **FR-046** | Unresolved incidents shall not have a resolution date. |
 | **FR-047** | Clients shall be able to view Incident records associated with their own account, including the status of their resolution. |
 | **FR-048** | Technicians and Administrators shall be able to view all Incident records within their tenant. |
 | **FR-049** | The resolution status categories for an Incident shall be extensible in future versions without requiring structural changes to the data model. |
+| **FR-074** | After creation, Clients, Technicians, and Administrators shall be able to attach additional file assets (images or documents) to an open or in-progress Incident record at any point prior to its final closure, independently of any files attached within a Resolution record. |
 
 ### 3.6 Invoice Management
 
@@ -358,6 +383,9 @@ Tenant
 | **FR-065** | Notifications shall be delivered within the application (in-app notification) as a minimum delivery channel. |
 | **FR-066** | The notification delivery infrastructure shall be architected to support additional delivery channels (e.g., email, push notification, SMS) in future versions. |
 | **FR-067** | The advance notice period for service due-date notifications shall be configurable at the tenant level by the Administrator. |
+| **FR-075** | The System shall maintain a persistent, immutable audit log of all notifications dispatched, recording for each entry: (a) Notification type and subject; (b) Recipient user(s); (c) Delivery channel(s) used; (d) Timestamp of dispatch; (e) Delivery status per channel (delivered, failed, or pending); (f) The domain event or triggering action that caused the notification to be issued. |
+| **FR-076** | Administrators shall be able to query the notification dispatch audit log for their tenant, with filtering by date range, notification type, recipient, and delivery status. |
+| **FR-077** | Notification audit log entries shall be retained for a minimum configurable period (default: 12 months) and shall not be editable or deletable by any user role. |
 
 ### 3.9 Reporting and Visibility
 
@@ -368,6 +396,29 @@ Tenant
 | **FR-070** | The System shall provide Technicians and Administrators with a dedicated screen displaying all resolved Incident records within their tenant, ordered by resolution date (most recently resolved first). |
 | **FR-071** | Each incident entry in the pending and resolved screens shall display, at minimum: title, priority, report date, associated client, and (for resolved) resolution date and status. |
 | **FR-072** | Administrators shall be able to filter the incident lists by client, priority, status, and date range. |
+
+### 3.10 Activity Lifecycle and Status Management
+
+| ID | Requirement |
+|---|---|
+| **FR-078** | The System shall track the complete operational status lifecycle of every ManagementActivity (Service and Incident) through an ordered, append-only sequence of ActivityStatusTransition records. |
+| **FR-079** | Each ActivityStatusTransition record shall contain: (a) The new operational status value (mandatory); (b) Timestamp of the transition, automatically set to the recording time (mandatory); (c) Identity of the actor recording the transition (mandatory); (d) Optional free-text notes explaining the reason for the transition. |
+| **FR-080** | The operational status lifecycle for a Service shall support the following statuses: (a) *SCHEDULED* — initial status set automatically upon creation; (b) *IN_PROGRESS* — a Technician has commenced work; (c) *AWAITING_PARTS* — work is blocked pending availability of a required material or component; (d) *COMPLETED* — work finished and formally closed through a ServiceResolution record. A Service shall only enter *COMPLETED* status when a ServiceResolution has been recorded; (e) *CANCELLED* — the service was cancelled without completion. |
+| **FR-081** | The operational status lifecycle for an Incident shall support the following statuses: (a) *OPEN* — initial status set automatically upon creation; (b) *IN_PROGRESS* — a Technician has begun addressing the incident; (c) *AWAITING_PARTS* — work is blocked pending availability of a required material or component; (d) *CLOSED* — final status, applied automatically when an IncidentResolution is recorded regardless of resolution outcome. The specific closure outcome (Resolved, Pending Parts, or Unable to Resolve) is captured in the IncidentResolution record; the *CLOSED* operational status signals that no further transitions are expected. |
+| **FR-082** | Technicians and Administrators shall be able to record a new ActivityStatusTransition on a Service or Incident at any point until the activity reaches its terminal status (*COMPLETED* or *CANCELLED* for Services; *CLOSED* for Incidents). |
+| **FR-083** | The complete ActivityStatusTransition history for a Service or Incident shall be visible to all authorised users (Technicians, Administrators, and the associated Client) on the activity detail view, presented as a chronological timeline. |
+| **FR-084** | The operational status values for Services and Incidents shall be stored in a configurable manner (e.g., database-driven enumeration), allowing the addition of new intermediate status values at the tenant or platform level without requiring code deployment. |
+
+### 3.11 Asset Management
+
+| ID | Requirement |
+|---|---|
+| **FR-085** | Technicians and Administrators shall be able to create, view, edit, and deactivate Asset records within the tenant. An Asset represents a physical item, piece of equipment, or installation against which maintenance activities are tracked. |
+| **FR-086** | An Asset record shall contain the following fields: (a) Name (mandatory); (b) Description (optional); (c) Asset category or type (optional); (d) Serial number or external reference (optional); (e) Installation or commissioning date (optional); (f) Associated Client (mandatory — each asset belongs to a specific client within the tenant). |
+| **FR-087** | A Service record may optionally reference an Asset, indicating which physical item the service was performed on or scheduled for. |
+| **FR-088** | An Incident record may optionally reference an Asset, indicating which physical item the incident concerns. |
+| **FR-089** | The System shall provide an Asset detail view listing all Service and Incident records associated with a given Asset, in reverse chronological order, forming a complete maintenance and fault history for that asset. |
+| **FR-090** | Clients shall be able to view Asset records and their associated maintenance history for assets linked to their own account. |
 
 ---
 
@@ -449,7 +500,7 @@ Tenant
 | ID | Requirement |
 |---|---|
 | **NFR-037** | The role and permission model shall be designed such that new roles (both employee and client categories) can be added through configuration and data changes, without requiring structural code modifications to the authorisation layer. |
-| **NFR-038** | The incident and service resolution status enumeration shall be stored in a configurable manner (e.g., database-driven) to allow the addition of new categories without requiring code deployments. |
+| **NFR-038** | The incident and service resolution status enumeration, and the operational activity status values used by ActivityStatusTransition, shall be stored in a configurable manner (e.g., database-driven) to allow the addition of new categories without requiring code deployments. |
 | **NFR-039** | The authentication service shall expose a plugin or adapter interface to allow the integration of additional identity providers (OAuth2 providers, LDAP/AD, TOTP) without modifying the core authentication flow. |
 | **NFR-040** | The notification service shall be designed with a channel abstraction layer, enabling the addition of new delivery channels (email, SMS, push) by implementing a defined interface, without modifying existing channel logic. |
 | **NFR-041** | The invoice handling module shall be architected to allow the future integration of a document signing service (e.g., a PKI-based PDF signing service) without requiring changes to the invoice storage or retrieval logic. |
@@ -1067,6 +1118,7 @@ The following priority levels are defined for the initial version of the Platfor
 | Version | Date | Author | Description of Change |
 |---|---|---|---|
 | 1.0.0 | 2026-06-08 | — | Initial release of the Software Requirements Specification. |
+| 1.1.0 | 2026-06-09 | — | Added requirements derived from the updated domain class diagram: Asset entity (FR-085–FR-090, Section 3.11); ActivityStatusTransition lifecycle tracking with SCHEDULED/IN_PROGRESS/AWAITING_PARTS/COMPLETED/CANCELLED/OPEN/CLOSED statuses (FR-078–FR-084, Section 3.10); file asset attachment at ManagementActivity level for both Services and Incidents (FR-073, FR-074); notification dispatch audit log (FR-075–FR-077, added to Section 3.8). Updated Section 2.4 entity overview. Amended FR-039 (file assets at creation time), FR-044 (resolution outcome status distinguished from operational status), and NFR-038 (ActivityStatusTransition status extensibility). |
 
 ---
 

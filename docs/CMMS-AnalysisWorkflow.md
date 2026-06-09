@@ -2,11 +2,11 @@
 
 ## Computerized Maintenance Management System (CMMS)
 
-**Document Version:** 2.0.0
+**Document Version:** 2.1.0
 **Phase:** Elaboration
 **Discipline:** Analysis (Unified Process)
-**Source of truth:** CMMS Software Requirements Specification (SRS) v1.0.0
-**Date:** 2026-06-08
+**Source of truth:** CMMS Software Requirements Specification (SRS) v1.1.0
+**Date:** 2026-06-09
 **Status:** Draft
 
 > **Scope note.** This document covers the Analysis discipline only: the conceptual domain model and the analysis-level realizations (sequence diagrams) of the use cases defined in the SRS. It deliberately excludes Boundary–Control–Entity (BCE) analysis classes and the entire Design workflow (no design classes, no architecture, no infrastructure, no persistence mapping). Where a concern is properly resolved during Design, this is stated explicitly rather than modelled here.
@@ -52,6 +52,9 @@ Two artefact types are produced:
 | Notification delivery | **Strategy** (`NotificationChannel` hierarchy) | In-app, email, push, and future channels are interchangeable delivery strategies. |
 | Audit trail | **Observer + immutable Audit Log** (`AuditLogger`, `AuditLogEntry`) | Audit capture is decoupled from the audited operation; entries are append-only records of state transitions. |
 | Shared work-item structure | **Generalization** (`MaintenanceActivity` → `Service`, `Incident`) | Shared identity, ownership, and client association are defined once; new work types extend the base. |
+| Files attached to any activity | **Generalization** (`FileAsset` associated with `ManagementActivity`) | Moving the file-attachment point to the base class enables both `Service` and `Incident` to carry files at any lifecycle stage without duplicating the association. |
+| Operational status lifecycle | **State Machine via immutable records** (`ActivityStatusTransition` sequence on `MaintenanceActivity`) | Each status change is an immutable, ordered record; the full history is preserved and queryable. Operational state (what is happening) is tracked separately from closure outcome (what the result was, captured in `Resolution`). |
+| Physical asset tracking | **Entity** (`Asset` aggregating maintenance history) | Physical assets are first-class domain entities; Services and Incidents optionally reference them to form a queryable per-asset maintenance and fault history. |
 | Shared resolution structure | **Generalization** (`Resolution` → `ServiceResolution`, `IncidentResolution`) | The SRS states both resolutions share the same arguments. |
 | Shared request structure | **Generalization** (`Request` → `AppointmentRequest`, `AccountRecoveryRequest`) | A uniform "submitted, reviewed, status-bearing" abstraction; new request-driven features extend it. |
 | Shared security-token structure | **Generalization** (`SecurityToken` → invitation, reset, refresh) | Time-limited, hashed, single-use tokens share lifecycle attributes. |
@@ -106,11 +109,15 @@ Because associations carry no names, the semantics of each relationship are docu
 
 ### Maintenance
 
-**MaintenanceActivity** *(abstract)* — The base for any tracked unit of maintenance work. Owns the shared identity (title, description, creation time), the tenant ownership (composition from `Tenant`), and the subject-client association. New work types (for example, inspections) extend this base and immediately inherit ownership and client association.
+**MaintenanceActivity** *(abstract)* — The base for any tracked unit of maintenance work. Owns the shared identity (title, description, creation time), the tenant ownership (composition from `Tenant`), and the subject-client association. It directly composes zero or more `FileAsset` instances (files or images attached at any lifecycle stage), independently of any files attached within a `Resolution`. It also aggregates an ordered sequence of `ActivityStatusTransition` records and may optionally reference one `Asset`. New work types (for example, inspections) extend this base and immediately inherit all of these capabilities.
 
-**Service** — Planned/preventive maintenance. Adds the actual service date, the next scheduled service date, and a free-text technical-notes field. Optionally composes one `ServiceResolution`.
+**ActivityStatusTransition** — An immutable record of a single operational-status change on a `MaintenanceActivity`. Each record captures: the new status value, the timestamp of the transition, the identity of the acting employee, and optional explanatory notes. The ordered sequence of transitions for an activity forms its complete status lifecycle history. Status values are configurable; the initial set for `Service` is SCHEDULED → IN_PROGRESS → AWAITING_PARTS → COMPLETED / CANCELLED, and for `Incident` is OPEN → IN_PROGRESS → AWAITING_PARTS → CLOSED. The *CLOSED* / *COMPLETED* terminal statuses are applied automatically when a `Resolution` is recorded. `ActivityStatusTransition` captures operational state (what is happening at a given moment) and is deliberately separate from `Resolution`, which captures the formal closure outcome.
 
-**Incident** — Reactive/corrective maintenance reported against a client. Adds the report timestamp, references a `Priority`, optionally composes client-supplied `FileAsset` images, and optionally composes one `IncidentResolution`.
+**Service** — Planned/preventive maintenance. Adds the actual service date, the next scheduled service date, and a free-text technical-notes field. Optionally composes one `ServiceResolution`. Inherits `FileAsset` composition and `ActivityStatusTransition` history from `MaintenanceActivity`.
+
+**Incident** — Reactive/corrective maintenance reported against a client. Adds the report timestamp and references a `Priority`. Optionally composes one `IncidentResolution`. Inherits `FileAsset` composition (which supersedes the former direct `Incident → FileAsset` association) and `ActivityStatusTransition` history from `MaintenanceActivity`.
+
+**Asset** — A tenant-scoped entity representing a physical item, piece of equipment, or installation. It is associated with a specific `Client` within the tenant and may be optionally referenced by both `Service` and `Incident` records. Its primary purpose is to serve as the aggregation point for querying the complete maintenance and fault history of a specific physical item. Adding an asset-reference to a new work type requires only a new optional reference to `Asset`; no change to `Asset` itself is needed.
 
 **Priority** — A tenant-configurable priority level (label, ordering level, default flag). Modelled as an entity rather than a fixed enumeration so that tenants may reconfigure levels and so that future time-based escalation can operate on it.
 
@@ -134,7 +141,7 @@ Because associations carry no names, the semantics of each relationship are docu
 
 **Invoice** — A formal charge document associated with a resolution; holds issuance date, amount, and discount, and composes exactly one `FileAsset` (its document).
 
-**FileAsset** — A reference to a binary stored externally (the model holds the storage key, never the bytes). Reused in three composition contexts: client images on an incident, evidentiary images on a resolution, and the document of an invoice. Each instance belongs to exactly one owner.
+**FileAsset** — A reference to a binary stored externally (the model holds the storage key, never the bytes). Reused in three composition contexts: files attached directly to a `ManagementActivity` at any lifecycle stage (formerly only available on `Incident` at creation; now generalised to the base class covering both `Service` and `Incident`), evidentiary images on a `Resolution`, and the document of an `Invoice`. Each instance belongs to exactly one owner.
 
 ### Events, Notification, and Audit
 
@@ -154,6 +161,8 @@ Because associations carry no names, the semantics of each relationship are docu
 
 **AuditLogEntry** — An append-only record of a state transition: the affected entity type and identifier, the action, the previous and new states, the actor (association to `User`), and the time of occurrence.
 
+**Notification audit** — The `Notification` entity, together with its per-channel delivery-status record, constitutes the notification audit log required by FR-075–FR-077. Each dispatched `Notification` carries the triggering event reference, the recipient, the channel used, and the delivery status. The `NotificationDispatcher` is responsible for persisting this record; the `AuditLogger` captures the corresponding `AuditLogEntry` for domain-event–level traceability. Administrators may query the notification audit log for their tenant (FR-076); the records are immutable and subject to the retention policy (FR-077).
+
 ---
 
 ## 5. Use-Case Realizations (Analysis Sequence Diagrams)
@@ -166,16 +175,24 @@ Each diagram realizes one SRS use case using only the actor and domain objects. 
 sequenceDiagram
     actor Client
     participant Incident
+    participant AST as ActivityStatusTransition
+    participant FileAsset
     participant Tenant
     participant Priority
     participant Publisher as DomainEventPublisher
     participant Notifier as NotificationDispatcher
     participant Auditor as AuditLogger
 
-    Client->>Incident: create(title, description, images)
+    Client->>Incident: create(title, description)
+    opt images provided at submission
+        Client->>FileAsset: upload(images)
+        FileAsset-->>Incident: compose(fileAssets)
+    end
     Incident->>Tenant: requestDefaultPriority()
     Tenant->>Priority: selectDefault()
     Priority-->>Incident: defaultPriority
+    Incident->>AST: create(status=OPEN)
+    AST->>Incident: appendTransition()
     Incident->>Publisher: publish(IncidentReportedEvent)
     Publisher->>Notifier: onEvent(IncidentReportedEvent)
     Notifier->>Notification: create(forStaff)
@@ -191,16 +208,29 @@ sequenceDiagram
 sequenceDiagram
     actor Technician as Technician (Employee)
     participant Incident
+    participant AST as ActivityStatusTransition
     participant IncidentResolution
     participant FileAsset
     participant Publisher as DomainEventPublisher
     participant Notifier as NotificationDispatcher
     participant Auditor as AuditLogger
 
-    Technician->>IncidentResolution: create(status, description, priceCharged, discount)
+    Note over Technician,Incident: Technician advances the operational status before closing
+    Technician->>AST: create(status=IN_PROGRESS, notes)
+    AST->>Incident: appendTransition()
+    opt work blocked — awaiting parts
+        Technician->>AST: create(status=AWAITING_PARTS, notes)
+        AST->>Incident: appendTransition()
+        Note over Technician,AST: When parts arrive, technician resumes
+        Technician->>AST: create(status=IN_PROGRESS, notes)
+        AST->>Incident: appendTransition()
+    end
+    Technician->>IncidentResolution: create(outcomeStatus, description, priceCharged, discount)
     Technician->>IncidentResolution: attach(images)
     IncidentResolution->>FileAsset: compose(images)
     Technician->>Incident: setResolution(incidentResolution)
+    Incident->>AST: create(status=CLOSED)
+    AST->>Incident: appendTransition()
     Incident->>Publisher: publish(IncidentResolvedEvent)
     Publisher->>Notifier: onEvent(IncidentResolvedEvent)
     Notifier->>Notification: create(forSubjectClient)
@@ -216,12 +246,15 @@ sequenceDiagram
 sequenceDiagram
     actor Technician as Technician (Employee)
     participant Service
+    participant AST as ActivityStatusTransition
     participant Client
     participant Auditor as AuditLogger
 
     Technician->>Service: create(title, description, serviceDate, nextServiceDate, technicalNotes)
     Technician->>Service: assignSubject(client)
     Service->>Client: link()
+    Service->>AST: create(status=SCHEDULED)
+    AST->>Service: appendTransition()
     Service->>Auditor: notifyCreated()
     Auditor->>AuditLogEntry: append(action = SERVICE_CREATED)
     Service-->>Technician: confirmation(serviceId)
@@ -233,14 +266,27 @@ sequenceDiagram
 sequenceDiagram
     actor Technician as Technician (Employee)
     participant Service
+    participant AST as ActivityStatusTransition
     participant ServiceResolution
     participant FileAsset
     participant Auditor as AuditLogger
 
+    Note over Technician,Service: Technician records intermediate status transitions before completion
+    Technician->>AST: create(status=IN_PROGRESS, notes)
+    AST->>Service: appendTransition()
+    opt work blocked — awaiting parts
+        Technician->>AST: create(status=AWAITING_PARTS, notes)
+        AST->>Service: appendTransition()
+        Note over Technician,AST: When parts arrive, technician resumes
+        Technician->>AST: create(status=IN_PROGRESS, notes)
+        AST->>Service: appendTransition()
+    end
     Technician->>ServiceResolution: create(resolutionDate, description, priceCharged, discount)
     Technician->>ServiceResolution: attach(images)
     ServiceResolution->>FileAsset: compose(images)
     Technician->>Service: setResolution(serviceResolution)
+    Service->>AST: create(status=COMPLETED)
+    AST->>Service: appendTransition()
     Service->>Auditor: notifyCompleted()
     Auditor->>AuditLogEntry: append(action = SERVICE_COMPLETED)
     Service-->>Technician: completionRecorded
@@ -480,7 +526,7 @@ sequenceDiagram
 
 **Single Responsibility Principle.** Each class has exactly one reason to change. `User` changes only when identity attributes change; credential concerns live in `AuthenticationMethod`. A `Service` or `Incident` manages only its own state and raises an event; it never changes because notification or audit rules change. `NotificationDispatcher` changes only with notification logic, `AuditLogger` only with audit logic, and each `NotificationChannel` only with its own delivery medium.
 
-**Open/Closed Principle.** Every axis of change the SRS anticipates is realized by adding a subtype or a data row, not by editing existing classes: a new user category extends `User`; a new authentication form extends `AuthenticationMethod`; a new second factor extends `SecondFactor`; a new delivery medium realizes `NotificationChannel`; a new reaction realizes `DomainEventObserver`; a new occurrence extends `DomainEvent`; a new reviewable feature extends `Request`; a new work type extends `MaintenanceActivity`; a new corrective outcome is a new `ResolutionStatus` value; new permissions and roles are data.
+**Open/Closed Principle.** Every axis of change the SRS anticipates is realized by adding a subtype or a data row, not by editing existing classes: a new user category extends `User`; a new authentication form extends `AuthenticationMethod`; a new second factor extends `SecondFactor`; a new delivery medium realizes `NotificationChannel`; a new reaction realizes `DomainEventObserver`; a new occurrence extends `DomainEvent`; a new reviewable feature extends `Request`; a new work type extends `MaintenanceActivity` and immediately inherits `FileAsset` attachment, `ActivityStatusTransition` tracking, and `Asset` association; a new corrective outcome is a new `ResolutionStatus` value; a new operational status is a new `ActivityStatus` configuration row; new permissions and roles are data.
 
 **Liskov Substitution Principle.** Every subtype is a faithful substitute for its base. `Employee` and `Client` are usable wherever a `User` is expected (as notification recipient or audit actor). `ServiceResolution` and `IncidentResolution` honour the full `Resolution` contract, the latter only adding state. Every concrete `NotificationChannel` fulfils `deliver` without weakening expectations.
 
@@ -563,12 +609,30 @@ sequenceDiagram
 | FR-070 resolved incidents by date | incident query ordering | UC-006 |
 | FR-071 incident list fields | `Incident` / `Resolution` attributes | UC-006 |
 | FR-072 filter incidents | query parameters | UC-006 |
+| FR-073 file assets on services | `ManagementActivity *-- FileAsset` | UC-004 |
+| FR-074 file assets on incidents at any lifecycle point | `ManagementActivity *-- FileAsset` | UC-001, UC-002 |
+| FR-075 notification dispatch audit log | `Notification` + delivery-status record | UC-015 |
+| FR-076 admin queries notification audit | notification audit query | — |
+| FR-077 notification audit retention / immutability | immutable `Notification` record lifecycle | — |
+| FR-078 ActivityStatusTransition tracking | `MaintenanceActivity *-- ActivityStatusTransition` | UC-001, UC-002, UC-003, UC-004 |
+| FR-079 ActivityStatusTransition fields | `ActivityStatusTransition` attributes | UC-002, UC-004 |
+| FR-080 Service operational statuses | `ActivityStatus` values (SCHEDULED … COMPLETED) | UC-003, UC-004 |
+| FR-081 Incident operational statuses | `ActivityStatus` values (OPEN … CLOSED) | UC-001, UC-002 |
+| FR-082 record new status transition | `ActivityStatusTransition` creation | UC-002, UC-004 |
+| FR-083 status history visibility | `ActivityStatusTransition` query | UC-002, UC-004 |
+| FR-084 configurable status values | `ActivityStatus` database-driven configuration | — |
+| FR-085 create / manage assets | `Asset` | — |
+| FR-086 asset record fields | `Asset` attributes | — |
+| FR-087 service-to-asset reference | `Service →(optional) Asset` | — |
+| FR-088 incident-to-asset reference | `Incident →(optional) Asset` | — |
+| FR-089 asset maintenance history | `Asset`-scoped query on `MaintenanceActivity` | — |
+| FR-090 client views own assets | client-scoped `Asset` query | — |
 
-All 72 functional requirements are realized by the model.
+All 90 functional requirements are realized by the model.
 
 ### 7.2 Non-Functional Requirements
 
-**Addressed structurally by the model.** Multi-tenant isolation (NFR-016) is enforced by making `Tenant` the composition root of every tenant-scoped concept, so every query is naturally tenant-bounded. API-level, role-driven access control (NFR-013) is realized by `Role`/`Permission` and the permission-test discipline. Credential protection (NFR-011) is localised to `PasswordAuthentication.passwordHash`. The extensibility family (NFR-037 through NFR-041) is satisfied by the inheritance, Strategy, and Observer structures described in Section 6. Audit and traceability (NFR-045) are satisfied by the immutable `AuditLogEntry` stream; the right-to-erasure expectation (NFR-043) is supported by the composition cascades from `Tenant` and `User`.
+**Addressed structurally by the model.** Multi-tenant isolation (NFR-016) is enforced by making `Tenant` the composition root of every tenant-scoped concept, so every query is naturally tenant-bounded. API-level, role-driven access control (NFR-013) is realized by `Role`/`Permission` and the permission-test discipline. Credential protection (NFR-011) is localised to `PasswordAuthentication.passwordHash`. The extensibility family (NFR-037 through NFR-041) is satisfied by the inheritance, Strategy, and Observer structures described in Section 6; NFR-038 is additionally covered by the configurable `ActivityStatus` values. Audit and traceability (NFR-045) are satisfied by the immutable `AuditLogEntry` stream and by the per-`Notification` delivery-status record; the right-to-erasure expectation (NFR-043) is supported by the composition cascades from `Tenant` and `User`.
 
 **Deferred to the Design and Implementation workflows.** Performance and capacity (NFR-001 through NFR-008), availability and recovery (NFR-024 through NFR-027), maintainability tooling and test coverage (NFR-028 through NFR-032), cross-platform delivery (NFR-033 through NFR-036), and transport/at-rest encryption are realization concerns. The domain model is intentionally agnostic to them and places no obstacle in their path; they are not — and at the analysis level cannot be — discharged here.
 
@@ -585,6 +649,7 @@ All 72 functional requirements are realized by the model.
 | Version | Date | Author | Description |
 |---|---|---|---|
 | 2.0.0 | 2026-06-08 | — | New analysis model produced solely from the SRS. Adds the user hierarchy, RBAC, authentication Strategy, Observer-based notification and audit, delivery-channel Strategy, and shared abstractions for activities, resolutions, requests, and tokens. Includes sequence realizations for UC-001 through UC-016 and full requirement verification. |
+| 2.1.0 | 2026-06-09 | — | Updated to align with SRS v1.1.0. Added `Asset` and `ActivityStatusTransition` to Section 2.1 pattern table and Section 4 entity catalog. Generalised `FileAsset` composition from `Incident`-only to `ManagementActivity` base class. Documented notification audit log responsibility in the `Notification`/`NotificationDispatcher` section. Updated sequence diagrams for UC-001 (OPEN transition + FileAsset via base class), UC-002 (intermediate IN_PROGRESS/AWAITING_PARTS transitions before CLOSED), UC-003 (SCHEDULED initial transition), and UC-004 (IN_PROGRESS/AWAITING_PARTS transitions before COMPLETED). Updated SOLID compliance analysis (OCP) and Section 7 requirements verification for FR-073 through FR-090. |
 
 ---
 
