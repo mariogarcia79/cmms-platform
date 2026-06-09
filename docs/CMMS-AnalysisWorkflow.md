@@ -57,7 +57,7 @@ Two artefact types are produced:
 | Physical asset tracking | **Entity** (`Asset` aggregating maintenance history) | Physical assets are first-class domain entities; Services and Incidents optionally reference them to form a queryable per-asset maintenance and fault history. |
 | Shared resolution structure | **Generalization** (`Resolution` → `ServiceResolution`, `IncidentResolution`) | The SRS states both resolutions share the same arguments. |
 | Shared request structure | **Generalization** (`Request` → `AppointmentRequest`, `AccountRecoveryRequest`) | A uniform "submitted, reviewed, status-bearing" abstraction; new request-driven features extend it. |
-| Shared security-token structure | **Generalization** (`SecurityToken` → invitation, reset, refresh) | Time-limited, hashed, single-use tokens share lifecycle attributes. |
+| Shared security-token structure | **Generalization** (`SecurityToken` → invitation, reset, session) | Time-limited, hashed, single-use tokens share lifecycle attributes. |
 
 ### 2.2 Two Decisions That Simplify the Model
 
@@ -105,7 +105,7 @@ Because associations carry no names, the semantics of each relationship are docu
 
 ### Security Tokens
 
-**SecurityToken** *(abstract)* — A time-limited, hashed, single-use credential with a lifecycle status. Concrete subtypes share this structure: **InvitationToken** (client onboarding), **PasswordResetToken** (credential reset), and **RefreshToken** (session continuation). New token-driven flows extend the base.
+**SecurityToken** *(abstract)* — A time-limited, hashed, single-use credential with a lifecycle status. Concrete subtypes share this structure: **InvitationToken** (client onboarding), **PasswordResetToken** (credential reset), and **SessionToken** (session continuation). New token-driven flows extend the base.
 
 ### Maintenance
 
@@ -193,12 +193,12 @@ sequenceDiagram
     Priority-->>Incident: defaultPriority
     Incident->>AST: create(status=OPEN)
     AST->>Incident: appendTransition()
-    Incident->>Publisher: publish(IncidentReportedEvent)
-    Publisher->>Notifier: onEvent(IncidentReportedEvent)
+    Incident->>Publisher: publish(ActivityReportedEvent)
+    Publisher->>Notifier: onEvent(ActivityReportedEvent)
     Notifier->>Notification: create(forStaff)
     Notifier->>InAppChannel: deliver(notification)
-    Publisher->>Auditor: onEvent(IncidentReportedEvent)
-    Auditor->>AuditLogEntry: append(action = INCIDENT_REPORTED)
+    Publisher->>Auditor: onEvent(ActivityReportedEvent)
+    Auditor->>AuditLogEntry: append(action = ACTIVITY_REPORTED)
     Incident-->>Client: confirmation(incidentId)
 ```
 
@@ -231,12 +231,12 @@ sequenceDiagram
     Technician->>Incident: setResolution(incidentResolution)
     Incident->>AST: create(status=CLOSED)
     AST->>Incident: appendTransition()
-    Incident->>Publisher: publish(IncidentResolvedEvent)
-    Publisher->>Notifier: onEvent(IncidentResolvedEvent)
+    Incident->>Publisher: publish(ActivityResolvedEvent)
+    Publisher->>Notifier: onEvent(ActivityResolvedEvent)
     Notifier->>Notification: create(forSubjectClient)
     Notifier->>InAppChannel: deliver(notification)
-    Publisher->>Auditor: onEvent(IncidentResolvedEvent)
-    Auditor->>AuditLogEntry: append(action = INCIDENT_RESOLVED)
+    Publisher->>Auditor: onEvent(ActivityResolvedEvent)
+    Auditor->>AuditLogEntry: append(action = ACTIVITY_RESOLVED)
     Incident-->>Technician: resolutionRecorded
 ```
 
@@ -248,6 +248,8 @@ sequenceDiagram
     participant Service
     participant AST as ActivityStatusTransition
     participant Client
+    participant Publisher as DomainEventPublisher
+    participant Notifier as NotificationDispatcher
     participant Auditor as AuditLogger
 
     Technician->>Service: create(title, description, serviceDate, nextServiceDate, technicalNotes)
@@ -255,7 +257,11 @@ sequenceDiagram
     Service->>Client: link()
     Service->>AST: create(status=SCHEDULED)
     AST->>Service: appendTransition()
-    Service->>Auditor: notifyCreated()
+    Service->>Publisher: publish(ActivityReportedEvent)
+    Publisher->>Notifier: onEvent(ActivityReportedEvent)
+    Notifier->>Notification: create(forSubjectClient)
+    Notifier->>InAppChannel: deliver(notification)
+    Publisher->>Auditor: onEvent(ActivityReportedEvent)
     Auditor->>AuditLogEntry: append(action = SERVICE_CREATED)
     Service-->>Technician: confirmation(serviceId)
 ```
@@ -269,6 +275,8 @@ sequenceDiagram
     participant AST as ActivityStatusTransition
     participant ServiceResolution
     participant FileAsset
+    participant Publisher as DomainEventPublisher
+    participant Notifier as NotificationDispatcher
     participant Auditor as AuditLogger
 
     Note over Technician,Service: Technician records intermediate status transitions before completion
@@ -287,7 +295,11 @@ sequenceDiagram
     Technician->>Service: setResolution(serviceResolution)
     Service->>AST: create(status=COMPLETED)
     AST->>Service: appendTransition()
-    Service->>Auditor: notifyCompleted()
+    Service->>Publisher: publish(ActivityResolvedEvent)
+    Publisher->>Notifier: onEvent(ActivityResolvedEvent)
+    Notifier->>Notification: create(forSubjectClient)
+    Notifier->>InAppChannel: deliver(notification)
+    Publisher->>Auditor: onEvent(ActivityResolvedEvent)
     Auditor->>AuditLogEntry: append(action = SERVICE_COMPLETED)
     Service-->>Technician: completionRecorded
 ```
@@ -325,7 +337,7 @@ sequenceDiagram
     actor User
     participant Auth as AuthenticationMethod
     participant SecondFactor
-    participant RefreshToken
+    participant SessionToken
     participant Auditor as AuditLogger
 
     User->>Auth: authenticate(credentials)
@@ -334,8 +346,8 @@ sequenceDiagram
         User->>SecondFactor: verify(otp)
         SecondFactor-->>User: secondFactorVerified
     end
-    User->>RefreshToken: issue()
-    RefreshToken-->>User: sessionEstablished
+    User->>SessionToken: issue()
+    SessionToken-->>User: sessionEstablished
     User->>Auditor: notifyAuthenticated()
     Auditor->>AuditLogEntry: append(action = USER_AUTHENTICATED)
 ```
@@ -366,16 +378,19 @@ sequenceDiagram
     actor Client
     participant InvitationToken
     participant PasswordAuthentication
+    participant SessionToken
     participant Auditor as AuditLogger
 
     Client->>InvitationToken: validate(rawToken)
     InvitationToken-->>Client: valid
-    Client->>PasswordAuthentication: create(passwordHash)
+    Note over Client,InvitationToken: email is autocompleted from the token's recipient address
+    Client->>PasswordAuthentication: create(email, passwordHash)
     Client->>Client: activate()
     Client->>InvitationToken: consume()
     Client->>Auditor: notifyRegistered()
     Auditor->>AuditLogEntry: append(action = CLIENT_REGISTERED)
-    Client-->>Client: accessGranted
+    Client->>SessionToken: issue()
+    SessionToken-->>Client: sessionEstablished
 ```
 
 ### UC-010 — Client Requests Account Recovery
@@ -495,6 +510,8 @@ sequenceDiagram
         Publisher->>Notifier: onEvent(ServiceDueSoonEvent)
         Notifier->>Notification: create(forTechniciansAndAdministrators)
         Notifier->>InAppChannel: deliver(notification)
+        Notifier->>Notification: create(forSubjectClient)
+        Notifier->>InAppChannel: deliver(notification)
     end
 ```
 
@@ -546,8 +563,8 @@ sequenceDiagram
 | FR-002 OAuth2 login | `OAuth2Authentication` (Strategy subtype) | UC-007 |
 | FR-003 Active Directory login | `ActiveDirectoryAuthentication` | UC-007 |
 | FR-004 2FA (TOTP) | `SecondFactor` / `TotpSecondFactor` | UC-007 |
-| FR-005 session token | `RefreshToken` | UC-007 |
-| FR-006 logout | `RefreshToken.status = REVOKED` | UC-007 |
+| FR-005 session token | `SessionToken` | UC-007 |
+| FR-006 logout | `SessionToken.status = REVOKED` | UC-007 |
 | FR-007 password policy | enforced on `PasswordAuthentication` creation | UC-009 |
 | FR-008 employee password reset | `PasswordResetToken` | UC-010 |
 | FR-009 no client self-registration | `Client` created only by `Employee` | UC-008 |
@@ -650,6 +667,7 @@ All 90 functional requirements are realized by the model.
 |---|---|---|---|
 | 2.0.0 | 2026-06-08 | — | New analysis model produced solely from the SRS. Adds the user hierarchy, RBAC, authentication Strategy, Observer-based notification and audit, delivery-channel Strategy, and shared abstractions for activities, resolutions, requests, and tokens. Includes sequence realizations for UC-001 through UC-016 and full requirement verification. |
 | 2.1.0 | 2026-06-09 | — | Updated to align with SRS v1.1.0. Added `Asset` and `ActivityStatusTransition` to Section 2.1 pattern table and Section 4 entity catalog. Generalised `FileAsset` composition from `Incident`-only to `ManagementActivity` base class. Documented notification audit log responsibility in the `Notification`/`NotificationDispatcher` section. Updated sequence diagrams for UC-001 (OPEN transition + FileAsset via base class), UC-002 (intermediate IN_PROGRESS/AWAITING_PARTS transitions before CLOSED), UC-003 (SCHEDULED initial transition), and UC-004 (IN_PROGRESS/AWAITING_PARTS transitions before COMPLETED). Updated SOLID compliance analysis (OCP) and Section 7 requirements verification for FR-073 through FR-090. |
+| 2.2.0 | 2026-06-09 | — | Renamed `IncidentReportedEvent` → `ActivityReportedEvent` and `IncidentResolvedEvent` → `ActivityResolvedEvent` (and their corresponding audit action strings) across UC-001 and UC-002 to reflect that services also raise these events for notification and audit. Updated UC-003 and UC-004 to publish `ActivityReportedEvent` / `ActivityResolvedEvent` through the `DomainEventPublisher` (adding `NotificationDispatcher` and `InAppChannel` participants), replacing the former direct `notifyCreated()` / `notifyCompleted()` calls to `AuditLogger`. Renamed `RefreshToken` → `SessionToken` throughout (Section 2.1 pattern table, Section 4 entity catalog, UC-007 sequence diagram, and FR-005/FR-006 in Section 7.1) to match the class diagram, which has only session tokens at this stage. Updated UC-009: `PasswordAuthentication.create` now takes `email` alongside `passwordHash` (email autocompleted from the invitation token's recipient address), and a `SessionToken` is issued upon successful registration. Updated UC-015: `NotificationDispatcher` now also creates and delivers a notification to the subject client in addition to technicians and administrators. |
 
 ---
 
